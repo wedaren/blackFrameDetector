@@ -1,5 +1,6 @@
 {
     "name": "black-frame-detector",
+    "publisher": "wedaren",
     "displayName": "Black Frame Detector",
     "description": "Detects black frames in videos",
     "version": "0.0.1",
