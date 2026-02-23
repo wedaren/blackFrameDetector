@@ -1,0 +1,109 @@
+{
+    "name": "black-frame-detector",
+    "displayName": "Black Frame Detector",
+    "description": "Detects black frames in videos",
+    "version": "0.0.1",
+    "engines": {
+        "vscode": "^1.109.0"
+    },
+    "categories": [
+        "Other"
+    ],
+    "activationEvents": [],
+    "main": "./dist/extension.js",
+    "contributes": {
+        "configuration": {
+            "title": "Black Frame Detector",
+            "properties": {
+                "blackFrameDetector.defaultDirectory": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Default directory to store tasks and exported videos"
+                }
+            }
+        },
+        "viewsContainers": {
+            "activitybar": [
+                {
+                    "id": "blackFrameDetector",
+                    "title": "Black Frame Detector",
+                    "icon": "$(device-camera-video)"
+                }
+            ]
+        },
+        "views": {
+            "blackFrameDetector": [
+                {
+                    "id": "blackFrameDetector.tasksView",
+                    "name": "Tasks"
+                }
+            ]
+        },
+        "commands": [
+            {
+                "command": "blackFrameDetector.createTask",
+                "title": "New Task",
+                "icon": "$(add)"
+            },
+            {
+                "command": "blackFrameDetector.openSettings",
+                "title": "Open Black Frame Detector Settings",
+                "icon": "$(settings-gear)"
+            },
+            {
+                "command": "blackFrameDetector.revealInFinder",
+                "title": "Reveal in Finder",
+                "icon": "$(folder-opened)"
+            },
+            {
+                "command": "blackFrameDetector.manageCutPoints",
+                "title": "Manage Cut Points",
+                "icon": "$(edit)"
+            }
+        ],
+        "menus": {
+            "view/title": [
+                {
+                    "command": "blackFrameDetector.createTask",
+                    "when": "view == blackFrameDetector.tasksView",
+                    "group": "navigation"
+                }
+            ],
+            "view/item/context": [
+                {
+                    "command": "blackFrameDetector.revealInFinder",
+                    "when": "viewItem =~ /canReveal/"
+                },
+                {
+                    "command": "blackFrameDetector.manageCutPoints",
+                    "when": "viewItem == taskGroup",
+                    "group": "inline"
+                }
+            ]
+        }
+    },
+    "scripts": {
+        "vscode:prepublish": "npm run package",
+        "compile": "webpack",
+        "watch": "webpack --watch",
+        "package": "webpack --mode production --devtool hidden-source-map",
+        "compile-tests": "tsc -p . --outDir out",
+        "watch-tests": "tsc -p . -w --outDir out",
+        "pretest": "npm run compile-tests && npm run compile && npm run lint",
+        "lint": "eslint src",
+        "test": "vscode-test"
+    },
+    "devDependencies": {
+        "@types/vscode": "^1.109.0",
+        "@types/mocha": "^10.0.10",
+        "@types/node": "22.x",
+        "typescript-eslint": "^8.54.0",
+        "eslint": "^9.39.2",
+        "typescript": "^5.9.3",
+        "ts-loader": "^9.5.4",
+        "webpack": "^5.104.1",
+        "webpack-cli": "^6.0.1",
+        "@vscode/test-cli": "^0.0.12",
+        "@vscode/test-electron": "^2.5.2"
+    }
+}
