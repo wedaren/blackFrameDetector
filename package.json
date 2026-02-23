@@ -19,6 +19,16 @@
                     "type": "string",
                     "default": "",
                     "description": "Default directory to store tasks and exported videos"
+                },
+                "blackFrameDetector.previewDuration": {
+                    "type": "number",
+                    "default": 2.0,
+                    "description": "Duration (in seconds) for the animated WebP hover previews at each cut point"
+                },
+                "blackFrameDetector.minSliceDuration": {
+                    "type": "number",
+                    "default": 30.0,
+                    "description": "Minimum duration (in seconds) for a sliced video clip. Cut points that result in shorter clips will be automatically ignored during initial detection."
                 }
             }
         },
@@ -59,6 +69,11 @@
                 "command": "blackFrameDetector.manageCutPoints",
                 "title": "Manage Cut Points",
                 "icon": "$(edit)"
+            },
+            {
+                "command": "blackFrameDetector.deleteTask",
+                "title": "Delete Task",
+                "icon": "$(trash)"
             }
         ],
         "menus": {
@@ -78,6 +93,11 @@
                     "command": "blackFrameDetector.manageCutPoints",
                     "when": "viewItem == taskGroup",
                     "group": "inline"
+                },
+                {
+                    "command": "blackFrameDetector.deleteTask",
+                    "when": "viewItem == taskGroup",
+                    "group": "1_modification"
                 }
             ]
         }

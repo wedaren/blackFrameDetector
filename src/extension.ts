@@ -10,7 +10,6 @@ import * as path from 'path';
 
 export function activate(context: vscode.ExtensionContext) {
     console.log('Congratulations, your extension "black-frame-detector" is now active!');
-    TaskManager.initialize(context);
 
     const treeProvider = new TaskTreeProvider();
     vscode.window.registerTreeDataProvider('blackFrameDetector.tasksView', treeProvider);
@@ -47,39 +46,55 @@ export function activate(context: vscode.ExtensionContext) {
         if (!node || !node.task) return;
         const task = node.task;
 
-        let cutPoints: CutPoint[] = TaskManager.getCutPoints(task.id);
+        let cutPoints: CutPoint[] = TaskManager.getCutPoints(task);
 
-        if (cutPoints.length === 0 && !task.isSplit) {
+        if (cutPoints.length === 0 && !task.isSplit && !task.isLoading && !task.isSplitting) {
             // First time detecting
-            await vscode.window.withProgress({
-                location: vscode.ProgressLocation.Notification,
-                title: `Detecting black frames for ${task.name}...`,
-                cancellable: false
-            }, async (progress) => {
-                try {
-                    progress.report({ message: 'Running FFmpeg blackdetect (this might take a while)...' });
-                    cutPoints = await FFmpegService.detectBlackFrames(task.originalVideoPath);
-                    progress.report({ message: 'Extracting preview images...' });
-                    const previewDir = path.join(context.globalStorageUri.fsPath, task.id);
-                    if (!fs.existsSync(previewDir)) { fs.mkdirSync(previewDir, { recursive: true }); }
-                    await FFmpegService.generatePreviewsForCutPoints(task.originalVideoPath, cutPoints, previewDir);
-                    TaskManager.saveCutPoints(task.id, cutPoints);
-                } catch (e: any) {
-                    vscode.window.showErrorMessage(`FFmpeg detection failed: ${e.message}`);
-                }
-            });
+            task.isLoading = true;
+            TaskManager.updateTask(task);
+            treeProvider.refresh();
+
+            try {
+                cutPoints = await FFmpegService.detectBlackFrames(task.originalVideoPath);
+                const previewDir = task.taskFolderPath;
+                if (!fs.existsSync(previewDir)) { fs.mkdirSync(previewDir, { recursive: true }); }
+                await FFmpegService.generatePreviewsForCutPoints(task.originalVideoPath, cutPoints, previewDir);
+                TaskManager.saveCutPoints(task, cutPoints);
+            } catch (e: any) {
+                vscode.window.showErrorMessage(`FFmpeg detection failed: ${e.message}`);
+            } finally {
+                task.isLoading = false;
+                TaskManager.updateTask(task);
+                treeProvider.refresh();
+            }
         }
 
-        CutPointWebview.createOrShow(task, cutPoints, treeProvider, context.globalStorageUri.fsPath);
+        if (!task.isLoading) {
+            CutPointWebview.createOrShow(task, cutPoints, treeProvider, task.taskFolderPath);
+        }
     });
 
     let manageDisposable = vscode.commands.registerCommand('blackFrameDetector.manageCutPoints', (node: TaskGroupNode) => {
         vscode.commands.executeCommand('blackFrameDetector.openWebview', node);
     });
 
+    let deleteDisposable = vscode.commands.registerCommand('blackFrameDetector.deleteTask', async (node: TaskGroupNode) => {
+        if (!node || !node.task) { return; }
+        const confirm = await vscode.window.showWarningMessage(`Are you sure you want to delete the task for "${node.task.name}"?`, { modal: true }, 'Delete');
+        if (confirm === 'Delete') {
+            TaskManager.removeTask(node.task);
+
+            if (CutPointWebview.currentPanel && CutPointWebview.currentPanel['_task'].id === node.task.id) {
+                CutPointWebview.currentPanel.dispose();
+            }
+            treeProvider.refresh();
+            vscode.window.showInformationMessage(`Task "${node.task.name}" deleted.`);
+        }
+    });
+
     let revealDisposable = vscode.commands.registerCommand('blackFrameDetector.revealInFinder', (node: FileNode) => {
         if (node && node.filePath) {
-            vscode.env.openExternal(vscode.Uri.file(node.filePath));
+            vscode.commands.executeCommand('revealFileInOS', vscode.Uri.file(node.filePath));
         }
     });
 
@@ -87,7 +102,7 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.commands.executeCommand('workbench.action.openSettings', 'blackFrameDetector.defaultDirectory');
     });
 
-    context.subscriptions.push(createDisposable, revealDisposable, settingsDisposable, manageDisposable, openWebviewDisposable);
+    context.subscriptions.push(createDisposable, revealDisposable, settingsDisposable, manageDisposable, openWebviewDisposable, deleteDisposable);
 }
 
 export function deactivate() { }

@@ -2,6 +2,18 @@ import * as vscode from 'vscode';
 
 export class ConfigManager {
     public static readonly DEFAULT_DIR_KEY = 'blackFrameDetector.defaultDirectory';
+    public static readonly PREVIEW_DURATION_KEY = 'blackFrameDetector.previewDuration';
+    public static readonly MIN_SLICE_DURATION_KEY = 'blackFrameDetector.minSliceDuration';
+
+    public static getMinSliceDuration(): number {
+        const config = vscode.workspace.getConfiguration();
+        return config.get<number>(this.MIN_SLICE_DURATION_KEY) || 5.0;
+    }
+
+    public static getPreviewDuration(): number {
+        const config = vscode.workspace.getConfiguration();
+        return config.get<number>(this.PREVIEW_DURATION_KEY) || 2.0;
+    }
 
     public static getDefaultDirectory(): string | undefined {
         const config = vscode.workspace.getConfiguration();

@@ -29,14 +29,9 @@ export class TaskTreeProvider implements vscode.TreeDataProvider<TaskNode> {
             const children: TaskNode[] = [];
 
             if (task.isSplit) {
-                const defaultDir = ConfigManager.getDefaultDirectory();
-                if (defaultDir) {
-                    const ext = path.extname(task.originalVideoPath);
-                    const baseName = path.basename(task.originalVideoPath, ext);
-                    const outputDir = path.join(defaultDir, `${baseName}_splits`);
-                    if (fs.existsSync(outputDir)) {
-                        children.push(new FileNode('Output Artifacts', outputDir, vscode.TreeItemCollapsibleState.Expanded));
-                    }
+                const outputDir = path.join(task.taskFolderPath, 'splits');
+                if (fs.existsSync(outputDir)) {
+                    children.push(new FileNode('Output Artifacts', outputDir, vscode.TreeItemCollapsibleState.Expanded));
                 }
             }
             return children;
@@ -69,16 +64,27 @@ export abstract class TaskNode extends vscode.TreeItem {
 export class TaskGroupNode extends TaskNode {
     constructor(public readonly task: Task) {
         super(task.name || task.id, task.isSplit ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None);
+
         // Command to open webview directly when clicked
-        this.command = {
+        this.command = (task.isLoading || task.isSplitting) ? undefined : {
             command: 'blackFrameDetector.openWebview',
             title: 'Open Webview',
             arguments: [this]
         };
+
         this.contextValue = 'taskGroup';
         this.iconPath = new vscode.ThemeIcon('device-camera-video');
         this.tooltip = `Task Created: ${new Date(task.createdAt).toLocaleString()}`;
-        if (task.isSplit) {
+
+        if (task.isLoading) {
+            this.iconPath = new vscode.ThemeIcon('loading~spin');
+            this.description = 'Detecting black frames...';
+            this.tooltip = `Detecting black frames for ${task.name}...`;
+        } else if (task.isSplitting) {
+            this.iconPath = new vscode.ThemeIcon('loading~spin');
+            this.description = 'Splitting video...';
+            this.tooltip = `Splitting video ${task.name}...`;
+        } else if (task.isSplit) {
             this.iconPath = new vscode.ThemeIcon('check-all');
             this.description = 'Split Complete';
         }
@@ -96,6 +102,11 @@ export class FileNode extends TaskNode {
         this.tooltip = filePath;
 
         if (collapsibleState === vscode.TreeItemCollapsibleState.None) {
+            this.command = {
+                command: 'blackFrameDetector.revealInFinder',
+                title: 'Reveal in Finder',
+                arguments: [this]
+            };
             this.iconPath = new vscode.ThemeIcon('file-media');
             if (filePath.endsWith('.mp4') || filePath.endsWith('.mov') || filePath.endsWith('.avi')) {
                 this.iconPath = new vscode.ThemeIcon('device-camera-video');
