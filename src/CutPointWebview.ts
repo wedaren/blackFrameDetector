@@ -29,10 +29,31 @@ export class CutPointWebview {
                         const cp = this._cutPoints.find(c => c.id === message.id);
                         if (cp) {
                             cp.time = message.time;
-                            const previewDir = path.join(this.storagePath, this._task.id);
-                            await FFmpegService.generatePreviewsForCutPoints(this._task.originalVideoPath, [cp], previewDir);
+                            cp.previewBefore = undefined;
+                            cp.previewAfter = undefined;
+                            cp.previewAnimBefore = undefined;
+                            cp.previewAnimAfter = undefined;
+                            const previewDir = this._task.taskFolderPath;
+                            if (previewDir && fs.existsSync(previewDir)) {
+                                await FFmpegService.generatePreviewsForCutPoints(this._task.originalVideoPath, [cp], previewDir);
+                            }
                             this._saveCutPoints();
-                            this._update();
+
+                            const cacheBuster = Date.now().toString();
+                            const webview = this._panel.webview;
+                            const beforeUri = cp.previewBefore && fs.existsSync(cp.previewBefore) ? `${webview.asWebviewUri(vscode.Uri.file(cp.previewBefore)).toString()}?t=${cacheBuster}` : '';
+                            const afterUri = cp.previewAfter && fs.existsSync(cp.previewAfter) ? `${webview.asWebviewUri(vscode.Uri.file(cp.previewAfter)).toString()}?t=${cacheBuster}` : '';
+                            const beforeAnimUri = cp.previewAnimBefore && fs.existsSync(cp.previewAnimBefore) ? `${webview.asWebviewUri(vscode.Uri.file(cp.previewAnimBefore)).toString()}?t=${cacheBuster}` : '';
+                            const afterAnimUri = cp.previewAnimAfter && fs.existsSync(cp.previewAnimAfter) ? `${webview.asWebviewUri(vscode.Uri.file(cp.previewAnimAfter)).toString()}?t=${cacheBuster}` : '';
+
+                            webview.postMessage({
+                                command: 'cutPointUpdated',
+                                id: cp.id,
+                                beforeUri,
+                                afterUri,
+                                beforeAnimUri,
+                                afterAnimUri
+                            });
                         }
                         return;
                     case 'addCutPoint':
@@ -207,8 +228,14 @@ export class CutPointWebview {
         ${mappedData.length === 0 ? '<p>No cut points found. Add one manually.</p>' : ''}
         ${mappedData.map((cp, idx) => {
             const durationTxt = cp.duration ? `<div style="font-size: 12px; color: var(--vscode-descriptionForeground);">Detected Duration: ${cp.duration.toFixed(2)}s</div>` : '';
-            const beforeImg = cp.beforeUri ? `<img src="${cp.beforeUri}" data-static="${cp.beforeUri}" data-anim="${cp.beforeAnimUri}" onmouseover="hoverAnim(this)" onmouseout="unhoverAnim(this)" alt="Before" style="cursor: pointer;">` : `<div style="height: 135px; width: 240px; display:flex; align-items:center; justify-content:center; border: 1px dashed var(--vscode-widget-border);">No Preview</div>`;
-            const afterImg = cp.afterUri ? `<img src="${cp.afterUri}" data-static="${cp.afterUri}" data-anim="${cp.afterAnimUri}" onmouseover="hoverAnim(this)" onmouseout="unhoverAnim(this)" alt="After" style="cursor: pointer;">` : `<div style="height: 135px; width: 240px; display:flex; align-items:center; justify-content:center; border: 1px dashed var(--vscode-widget-border);">No Preview</div>`;
+            const beforeImg = `
+                <img id="img-before-${cp.id}" src="${cp.beforeUri || ''}" data-static="${cp.beforeUri || ''}" data-anim="${cp.beforeAnimUri || ''}" onmouseover="hoverAnim(this)" onmouseout="unhoverAnim(this)" alt="Before" style="cursor: pointer; ${!cp.beforeUri ? 'display:none;' : ''}">
+                <div id="placeholder-before-${cp.id}" style="${cp.beforeUri ? 'display:none;' : ''} height: 135px; width: 240px; display:flex; align-items:center; justify-content:center; border: 1px dashed var(--vscode-widget-border);">No Preview</div>
+            `;
+            const afterImg = `
+                <img id="img-after-${cp.id}" src="${cp.afterUri || ''}" data-static="${cp.afterUri || ''}" data-anim="${cp.afterAnimUri || ''}" onmouseover="hoverAnim(this)" onmouseout="unhoverAnim(this)" alt="After" style="cursor: pointer; ${!cp.afterUri ? 'display:none;' : ''}">
+                <div id="placeholder-after-${cp.id}" style="${cp.afterUri ? 'display:none;' : ''} height: 135px; width: 240px; display:flex; align-items:center; justify-content:center; border: 1px dashed var(--vscode-widget-border);">No Preview</div>
+            `;
 
             const origTime = cp.originalTime || cp.time;
 
@@ -262,6 +289,46 @@ export class CutPointWebview {
 
     <script>
         const vscode = acquireVsCodeApi();
+
+        window.addEventListener('message', event => {
+            const message = event.data;
+            switch (message.command) {
+                case 'cutPointUpdated':
+                    const cpId = message.id;
+                    const beforeImg = document.getElementById('img-before-' + cpId);
+                    const beforePlaceholder = document.getElementById('placeholder-before-' + cpId);
+                    const afterImg = document.getElementById('img-after-' + cpId);
+                    const afterPlaceholder = document.getElementById('placeholder-after-' + cpId);
+                    
+                    if (beforeImg && beforePlaceholder) {
+                        if (message.beforeUri) {
+                            beforeImg.src = message.beforeUri;
+                            beforeImg.setAttribute('data-static', message.beforeUri);
+                            beforeImg.setAttribute('data-anim', message.beforeAnimUri || '');
+                            beforeImg.style.display = 'block';
+                            beforePlaceholder.style.display = 'none';
+                        } else {
+                            beforeImg.style.display = 'none';
+                            beforePlaceholder.style.display = 'flex';
+                        }
+                    }
+                    if (afterImg && afterPlaceholder) {
+                        if (message.afterUri) {
+                            afterImg.src = message.afterUri;
+                            afterImg.setAttribute('data-static', message.afterUri);
+                            afterImg.setAttribute('data-anim', message.afterAnimUri || '');
+                            afterImg.style.display = 'block';
+                            afterPlaceholder.style.display = 'none';
+                        } else {
+                            afterImg.style.display = 'none';
+                            afterPlaceholder.style.display = 'flex';
+                        }
+                    }
+                    
+                    document.body.style.cursor = 'default';
+                    break;
+            }
+        });
 
         function hoverAnim(imgElement) {
             const animSrc = imgElement.getAttribute('data-anim');
@@ -329,11 +396,18 @@ export class CutPointWebview {
             }
         }
 
+        const updateTimeouts = {};
+
         function updateCutPoint(id) {
             const timeVal = parseFloat(document.getElementById('time-' + id).value);
             if (!isNaN(timeVal)) {
-                document.body.style.cursor = 'wait';
-                vscode.postMessage({ command: 'updateCutPoint', id, time: timeVal });
+                if (updateTimeouts[id]) {
+                    clearTimeout(updateTimeouts[id]);
+                }
+                updateTimeouts[id] = setTimeout(() => {
+                    document.body.style.cursor = 'wait';
+                    vscode.postMessage({ command: 'updateCutPoint', id, time: timeVal });
+                }, 300);
             }
         }
 
