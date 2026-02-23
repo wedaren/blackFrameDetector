@@ -1,71 +1,39 @@
-# black-frame-detector README
+# Black Frame Detector
 
-This is the README for your extension "black-frame-detector". After writing up a brief description, we recommend including the following sections.
+Black Frame Detector 是一个用于检测视频中“黑帧”（全黑或接近全黑帧）的 VS Code 扩展，方便用户快速定位并切割出有问题的片段以便处理或删除。
 
-## Features
+## 特性
 
-Describe specific features of your extension including screenshots of your extension in action. Image paths are relative to this README file.
+- 自动扫描视频文件并识别黑帧的时间点
+- 在侧边栏展示检测任务与切点（Tasks 视图）
+- 在切点处生成短时预览（WebP 动画）以便快速确认
+- 支持将检测结果导出或在 Finder 中定位原始文件
 
-For example if there is an image subfolder under your extension project workspace:
+## 安装
 
-\!\[feature X\]\(images/feature-x.png\)
+从 VS Code Marketplace 安装 `Black Frame Detector`，或在开发模式下从源码运行并使用本地打包结果。
 
-> Tip: Many popular extensions utilize animations. This is an excellent way to show off your extension! We recommend short, focused animations that are easy to follow.
+## 使用方法
 
-## Requirements
+1. 在侧栏打开 `Black Frame Detector` 视图
+2. 创建新的检测任务并选择视频目录
+3. 运行检测，等待任务完成后在列表查看切点和预览
+4. 通过命令面板运行“Reveal in Finder”或导出结果
 
-If you have any requirements or dependencies, add a section describing those and how to install and configure them.
+## 配置项
 
-## Extension Settings
+插件提供若干设置（在 Settings 中搜索 `blackFrameDetector`）：
 
-Include if your extension adds any VS Code settings through the `contributes.configuration` extension point.
+- `blackFrameDetector.defaultDirectory`：默认存储目录
+- `blackFrameDetector.previewDuration`：预览动画时长（秒）
+- `blackFrameDetector.minSliceDuration`：最短切片时长（秒），过短的切点会被忽略
 
-For example:
+## 贡献与许可
 
-This extension contributes the following settings:
-
-* `myExtension.enable`: Enable/disable this extension.
-* `myExtension.thing`: Set to `blah` to do something.
-
-## Known Issues
-
-Calling out known issues can help limit users opening duplicate issues against your extension.
-
-## Release Notes
-
-Users appreciate release notes as you update your extension.
-
-### 1.0.0
-
-Initial release of ...
-
-### 1.0.1
-
-Fixed issue #.
-
-### 1.1.0
-
-Added features X, Y, and Z.
+欢迎提交 issue 或 PR。请参阅仓库中的贡献指南。
 
 ---
 
-## Following extension guidelines
+如需更多信息或演示截图，请查看项目页面或在 issue 中询问。
 
-Ensure that you've read through the extensions guidelines and follow the best practices for creating your extension.
-
-* [Extension Guidelines](https://code.visualstudio.com/api/references/extension-guidelines)
-
-## Working with Markdown
-
-You can author your README using Visual Studio Code. Here are some useful editor keyboard shortcuts:
-
-* Split the editor (`Cmd+\` on macOS or `Ctrl+\` on Windows and Linux).
-* Toggle preview (`Shift+Cmd+V` on macOS or `Shift+Ctrl+V` on Windows and Linux).
-* Press `Ctrl+Space` (Windows, Linux, macOS) to see a list of Markdown snippets.
-
-## For more information
-
-* [Visual Studio Code's Markdown Support](http://code.visualstudio.com/docs/languages/markdown)
-* [Markdown Syntax Reference](https://help.github.com/articles/markdown-basics/)
-
-**Enjoy!**
+感谢使用！
