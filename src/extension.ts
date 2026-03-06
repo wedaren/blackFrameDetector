@@ -77,6 +77,8 @@ export function activate(context: vscode.ExtensionContext) {
                 const previewDir = task.taskFolderPath;
                 if (!fs.existsSync(previewDir)) { fs.mkdirSync(previewDir, { recursive: true }); }
                 await FFmpegService.generatePreviewsForCutPoints(task.originalVideoPath, cutPoints, previewDir);
+                // Persist initial detected cut points so Restore can use cached results (avoid re-running ffmpeg)
+                TaskManager.saveDetectedCutPoints(task, cutPoints, false);
                 TaskManager.saveCutPoints(task, cutPoints);
             } catch (e: any) {
                 vscode.window.showErrorMessage(`FFmpeg detection failed: ${e.message}`);

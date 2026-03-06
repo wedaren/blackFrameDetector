@@ -104,6 +104,69 @@ export class CutPointWebview {
                             vscode.window.showErrorMessage(`Failed to split video: ${e.message}`);
                         }
                         return;
+                    case 'restoreDetected':
+                        {
+                            // Try to restore from cached detected.json first to avoid re-running ffmpeg
+                            const cached = TaskManager.getDetectedCutPoints(this._task);
+                            if (cached && cached.length > 0) {
+                                const confirmCached = await vscode.window.showWarningMessage('Restore to original detected cut points? This will replace current cut points.', { modal: true }, 'Restore');
+                                if (confirmCached !== 'Restore') return;
+
+                                this._cutPoints = cached;
+                                const previewDirCached = this._task.taskFolderPath;
+                                try {
+                                    if (!fs.existsSync(previewDirCached)) { fs.mkdirSync(previewDirCached, { recursive: true }); }
+                                    await FFmpegService.generatePreviewsForCutPoints(this._task.originalVideoPath, this._cutPoints, previewDirCached);
+                                    this._saveCutPoints();
+                                    this._update();
+                                } catch (e: any) {
+                                    vscode.window.showErrorMessage(`Failed to regenerate previews: ${e.message}`);
+                                }
+                                return;
+                            }
+
+                            // No cached detected data — offer to re-run detection
+                            const run = await vscode.window.showWarningMessage('No cached detected cut points found. Re-run detection (may be slow)?', { modal: true }, 'Re-detect', 'Cancel');
+                            if (run !== 'Re-detect') return;
+
+                            const defaultMode = ConfigManager.getDetectionMode();
+                            const pick = await vscode.window.showQuickPick([
+                                { label: `Use Default (${defaultMode})`, description: 'Use global detection mode' },
+                                { label: 'Black', description: 'Detect black frames only' },
+                                { label: 'White', description: 'Detect white frames only' },
+                                { label: 'Black+White', description: 'Detect both black and white frames' }
+                            ], { placeHolder: 'Select detection mode (Esc to use default)' });
+
+                            let selectedMode: 'black' | 'white' | 'both' = defaultMode;
+                            if (pick) {
+                                if (pick.label.startsWith('Use Default')) selectedMode = defaultMode;
+                                else if (pick.label === 'Black') selectedMode = 'black';
+                                else if (pick.label === 'White') selectedMode = 'white';
+                                else if (pick.label === 'Black+White') selectedMode = 'both';
+                            }
+
+                            this._task.isLoading = true;
+                            TaskManager.updateTask(this._task);
+                            this.treeProvider.refresh();
+
+                            try {
+                                const detected = await FFmpegService.detectFrames(this._task.originalVideoPath, selectedMode);
+                                const previewDir = this._task.taskFolderPath;
+                                if (!fs.existsSync(previewDir)) { fs.mkdirSync(previewDir, { recursive: true }); }
+                                await FFmpegService.generatePreviewsForCutPoints(this._task.originalVideoPath, detected, previewDir);
+                                this._cutPoints = detected;
+                                // overwrite cached detected.json with fresh results
+                                TaskManager.saveDetectedCutPoints(this._task, detected, true);
+                                this._saveCutPoints();
+                                this._update();
+                            } catch (e: any) {
+                                vscode.window.showErrorMessage(`Failed to restore detected cut points: ${e.message}`);
+                            } finally {
+                                this._task.isLoading = false;
+                                TaskManager.updateTask(this._task);
+                                this.treeProvider.refresh();
+                            }
+                        }
                 }
             },
             null,
@@ -219,6 +282,7 @@ export class CutPointWebview {
                     <input type="number" id="new-time" step="any" placeholder="Time (s)">
                     <button onclick="addCutPoint()">+ Add Cut Point</button>
                 </div>
+                <button onclick="restoreDetected()">Restore Detected</button>
                 <button class="primary" onclick="confirmSplit()">Confirm and Split Video</button>
             </div>
         </div>
@@ -417,6 +481,10 @@ export class CutPointWebview {
 
         function confirmSplit() {
             vscode.postMessage({ command: 'confirmSplit' });
+        }
+
+        function restoreDetected() {
+            vscode.postMessage({ command: 'restoreDetected' });
         }
     </script>
 </body>

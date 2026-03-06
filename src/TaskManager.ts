@@ -7,6 +7,7 @@ import { ConfigManager } from './ConfigManager';
 interface PersistentTaskState {
     task: Task;
     cutPoints: CutPoint[];
+    detectedCutPoints?: CutPoint[];
 }
 
 export class TaskManager {
@@ -46,8 +47,21 @@ export class TaskManager {
         if (!fs.existsSync(task.taskFolderPath)) {
             fs.mkdirSync(task.taskFolderPath, { recursive: true });
         }
-        const state: PersistentTaskState = { task, cutPoints };
         const taskJsonPath = path.join(task.taskFolderPath, 'task.json');
+
+        // Try to preserve existing detectedCutPoints if present
+        let detectedCutPoints: CutPoint[] | undefined = undefined;
+        if (fs.existsSync(taskJsonPath)) {
+            try {
+                const content = fs.readFileSync(taskJsonPath, 'utf8');
+                const existing: PersistentTaskState = JSON.parse(content);
+                detectedCutPoints = existing.detectedCutPoints;
+            } catch (e) {
+                console.error(`Failed to read existing task.json for ${task.id}`, e);
+            }
+        }
+
+        const state: PersistentTaskState = { task, cutPoints, detectedCutPoints };
         fs.writeFileSync(taskJsonPath, JSON.stringify(state, null, 2), 'utf8');
     }
 
@@ -104,6 +118,46 @@ export class TaskManager {
     }
 
     public static saveCutPoints(task: Task, cutPoints: CutPoint[]) {
+        // Save current cut points and ensure detectedCutPoints is stored in task.json on first save
         this.saveState(task, cutPoints);
+    }
+
+    public static saveDetectedCutPoints(task: Task, cutPoints: CutPoint[], overwrite: boolean = false) {
+        if (!task.taskFolderPath) { return; }
+        try {
+            const taskJsonPath = path.join(task.taskFolderPath, 'task.json');
+            let state: PersistentTaskState = { task, cutPoints: [] };
+            if (fs.existsSync(taskJsonPath)) {
+                try {
+                    const content = fs.readFileSync(taskJsonPath, 'utf8');
+                    state = JSON.parse(content);
+                } catch (e) {
+                    // ignore and overwrite
+                    state = { task, cutPoints: [] };
+                }
+            }
+
+            if (overwrite || !state.detectedCutPoints) {
+                state.detectedCutPoints = cutPoints;
+                fs.writeFileSync(taskJsonPath, JSON.stringify(state, null, 2), 'utf8');
+            }
+        } catch (e) {
+            console.error('Failed to save detected cut points into task.json', e);
+        }
+    }
+
+    public static getDetectedCutPoints(task: Task): CutPoint[] {
+        if (!task.taskFolderPath) { return []; }
+        const taskJsonPath = path.join(task.taskFolderPath, 'task.json');
+        if (fs.existsSync(taskJsonPath)) {
+            try {
+                const content = fs.readFileSync(taskJsonPath, 'utf8');
+                const state: PersistentTaskState = JSON.parse(content);
+                return state.detectedCutPoints || [];
+            } catch (e) {
+                console.error('Failed to read detected cut points from task.json', e);
+            }
+        }
+        return [];
     }
 }
