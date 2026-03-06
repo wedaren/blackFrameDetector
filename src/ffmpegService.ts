@@ -7,11 +7,14 @@ import { ConfigManager } from './ConfigManager';
 export class FFmpegService {
 
     public static detectBlackFrames(videoPath: string): Promise<CutPoint[]> {
+        return this.detectFrames(videoPath, 'black');
+    }
+
+    private static runBlackdetectWithFilter(videoPath: string, vfFilter: string): Promise<CutPoint[]> {
         return new Promise((resolve, reject) => {
-            // We use default parameters for blackdetect. E.g., duration >= 0.1s, pixel threshold 0.10
             const args = [
                 '-i', videoPath,
-                '-vf', 'blackdetect=d=0.1:pix_th=0.1',
+                '-vf', vfFilter,
                 '-an',
                 '-f', 'null',
                 '-'
@@ -22,22 +25,21 @@ export class FFmpegService {
             let output = '';
 
             ffmpeg.stderr.on('data', (data) => {
-                const text = data.toString();
-                output += text;
+                output += data.toString();
             });
 
             ffmpeg.on('close', (code) => {
                 if (code === 0) {
-                    // Parse lines like: [blackdetect @ 0x...] black_start:1.468 black_end:2.302 black_duration:0.834
                     const regex = /black_start:([0-9.]+)\s+black_end:([0-9.]+)\s+black_duration:([0-9.]+)/g;
                     let match;
                     while ((match = regex.exec(output)) !== null) {
                         const start = parseFloat(match[1]);
                         const end = parseFloat(match[2]);
                         const duration = parseFloat(match[3]);
-                        const time = start + (duration / 2);
+                        const time = end;
 
-                        if (!cutPoints.find(cp => cp.time === time)) {
+                        const duplicate = cutPoints.find(cp => Math.abs(cp.time - time) < 0.05);
+                        if (!duplicate) {
                             cutPoints.push({
                                 id: `cp_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
                                 time,
@@ -47,30 +49,58 @@ export class FFmpegService {
                         }
                     }
 
-                    const minSliceDuration = ConfigManager.getMinSliceDuration();
-                    const filteredCutPoints: CutPoint[] = [];
-                    let lastCutTime = 0;
-
-                    // Sort by time just in case FFmpeg output was out of order
-                    cutPoints.sort((a, b) => a.time - b.time);
-
-                    for (const cp of cutPoints) {
-                        if (cp.time - lastCutTime >= minSliceDuration) {
-                            filteredCutPoints.push(cp);
-                            lastCutTime = cp.time;
-                        }
-                    }
-
-                    resolve(filteredCutPoints);
+                    resolve(cutPoints);
                 } else {
                     reject(new Error(`ffmpeg exited with code ${code}. Output: ${output}`));
                 }
             });
 
-            ffmpeg.on('error', (err) => {
-                reject(err);
-            });
+            ffmpeg.on('error', (err) => reject(err));
         });
+    }
+
+    public static async detectFrames(videoPath: string, mode: 'black' | 'white' | 'both'): Promise<CutPoint[]> {
+        const minSliceDuration = ConfigManager.getMinSliceDuration();
+
+        if (mode === 'black') {
+            const raw = await this.runBlackdetectWithFilter(videoPath, 'blackdetect=d=0.1:pix_th=0.1');
+            return this.filterByMinSlice(raw, minSliceDuration);
+        }
+
+        if (mode === 'white') {
+            const raw = await this.runBlackdetectWithFilter(videoPath, 'negate,blackdetect=d=0.1:pix_th=0.1');
+            return this.filterByMinSlice(raw, minSliceDuration);
+        }
+
+        // both
+        const rawBlack = await this.runBlackdetectWithFilter(videoPath, 'blackdetect=d=0.1:pix_th=0.1');
+        const rawWhite = await this.runBlackdetectWithFilter(videoPath, 'negate,blackdetect=d=0.1:pix_th=0.1');
+
+        // merge and dedupe by time
+        const combined = [...rawBlack, ...rawWhite];
+        combined.sort((a, b) => a.time - b.time);
+
+        const merged: CutPoint[] = [];
+        for (const cp of combined) {
+            if (!merged.find(m => Math.abs(m.time - cp.time) < 0.05)) {
+                merged.push(cp);
+            }
+        }
+
+        return this.filterByMinSlice(merged, minSliceDuration);
+    }
+
+    private static filterByMinSlice(cutPoints: CutPoint[], minSliceDuration: number): CutPoint[] {
+        const filtered: CutPoint[] = [];
+        let lastCutTime = 0;
+        cutPoints.sort((a, b) => a.time - b.time);
+        for (const cp of cutPoints) {
+            if (cp.time - lastCutTime >= minSliceDuration) {
+                filtered.push(cp);
+                lastCutTime = cp.time;
+            }
+        }
+        return filtered;
     }
 
     public static extractPreview(videoPath: string, time: number, outputPath: string): Promise<void> {

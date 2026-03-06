@@ -26,6 +26,12 @@
                     "default": 2.0,
                     "description": "Duration (in seconds) for the animated WebP hover previews at each cut point"
                 },
+                "blackFrameDetector.detectionMode": {
+                    "type": "string",
+                    "default": "black",
+                    "enum": ["black", "white", "both"],
+                    "description": "Frame detection mode: 'black' for black frames, 'white' for white frames, 'both' for both"
+                },
                 "blackFrameDetector.minSliceDuration": {
                     "type": "number",
                     "default": 30.0,

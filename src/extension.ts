@@ -34,15 +34,32 @@ export function activate(context: vscode.ExtensionContext) {
 
         if (selected && selected.length > 0) {
             const videoPath = selected[0].fsPath;
+            // Ask for detection mode (optional)
+            const defaultMode = ConfigManager.getDetectionMode();
+            const pick = await vscode.window.showQuickPick([
+                { label: `Use Default (${defaultMode})`, description: 'Use global detection mode' },
+                { label: 'Black', description: 'Detect black frames only' },
+                { label: 'White', description: 'Detect white frames only' },
+                { label: 'Black+White', description: 'Detect both black and white frames' }
+            ], { placeHolder: 'Select detection mode (Esc to use default)' });
+
+            let selectedMode: 'black' | 'white' | 'both' = defaultMode;
+            if (pick) {
+                if (pick.label.startsWith('Use Default')) selectedMode = defaultMode;
+                else if (pick.label === 'Black') selectedMode = 'black';
+                else if (pick.label === 'White') selectedMode = 'white';
+                else if (pick.label === 'Black+White') selectedMode = 'both';
+            }
+
             const task = TaskManager.createTask(videoPath);
             treeProvider.refresh();
 
-            // Immediately open processing
-            vscode.commands.executeCommand('blackFrameDetector.openWebview', new TaskGroupNode(task));
+            // Immediately open processing and pass selected mode as optional arg
+            vscode.commands.executeCommand('blackFrameDetector.openWebview', new TaskGroupNode(task), selectedMode);
         }
     });
 
-    let openWebviewDisposable = vscode.commands.registerCommand('blackFrameDetector.openWebview', async (node: TaskGroupNode) => {
+    let openWebviewDisposable = vscode.commands.registerCommand('blackFrameDetector.openWebview', async (node: TaskGroupNode, mode?: 'black' | 'white' | 'both') => {
         if (!node || !node.task) return;
         const task = node.task;
 
@@ -55,7 +72,8 @@ export function activate(context: vscode.ExtensionContext) {
             treeProvider.refresh();
 
             try {
-                cutPoints = await FFmpegService.detectBlackFrames(task.originalVideoPath);
+                const usedMode = mode || ConfigManager.getDetectionMode();
+                cutPoints = await FFmpegService.detectFrames(task.originalVideoPath, usedMode);
                 const previewDir = task.taskFolderPath;
                 if (!fs.existsSync(previewDir)) { fs.mkdirSync(previewDir, { recursive: true }); }
                 await FFmpegService.generatePreviewsForCutPoints(task.originalVideoPath, cutPoints, previewDir);

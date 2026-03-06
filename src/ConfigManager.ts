@@ -3,6 +3,7 @@ import * as vscode from 'vscode';
 export class ConfigManager {
     public static readonly DEFAULT_DIR_KEY = 'blackFrameDetector.defaultDirectory';
     public static readonly PREVIEW_DURATION_KEY = 'blackFrameDetector.previewDuration';
+    public static readonly DETECTION_MODE_KEY = 'blackFrameDetector.detectionMode';
     public static readonly MIN_SLICE_DURATION_KEY = 'blackFrameDetector.minSliceDuration';
 
     public static getMinSliceDuration(): number {
@@ -13,6 +14,13 @@ export class ConfigManager {
     public static getPreviewDuration(): number {
         const config = vscode.workspace.getConfiguration();
         return config.get<number>(this.PREVIEW_DURATION_KEY) || 2.0;
+    }
+
+    public static getDetectionMode(): 'black' | 'white' | 'both' {
+        const config = vscode.workspace.getConfiguration();
+        const val = config.get<string>(this.DETECTION_MODE_KEY) || 'black';
+        if (val === 'white' || val === 'both') return val as 'white' | 'both';
+        return 'black';
     }
 
     public static getDefaultDirectory(): string | undefined {
