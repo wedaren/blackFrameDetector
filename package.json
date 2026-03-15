@@ -3,7 +3,7 @@
     "publisher": "wedaren",
     "displayName": "Black Frame Detector",
     "description": "Detects black frames in videos",
-    "version": "0.0.1",
+    "version": "0.0.2",
     "repository": {
         "type": "git",
         "url": "git@github.com:wedaren/blackFrameDetector.git"
@@ -27,18 +27,22 @@
                 },
                 "blackFrameDetector.previewDuration": {
                     "type": "number",
-                    "default": 2.0,
+                    "default": 2,
                     "description": "Duration (in seconds) for the animated WebP hover previews at each cut point"
                 },
                 "blackFrameDetector.detectionMode": {
                     "type": "string",
                     "default": "black",
-                    "enum": ["black", "white", "both"],
+                    "enum": [
+                        "black",
+                        "white",
+                        "both"
+                    ],
                     "description": "Frame detection mode: 'black' for black frames, 'white' for white frames, 'both' for both"
                 },
                 "blackFrameDetector.minSliceDuration": {
                     "type": "number",
-                    "default": 30.0,
+                    "default": 30,
                     "description": "Minimum duration (in seconds) for a sliced video clip. Cut points that result in shorter clips will be automatically ignored during initial detection."
                 }
             }
