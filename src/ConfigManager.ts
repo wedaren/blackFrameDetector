@@ -19,7 +19,9 @@ export class ConfigManager {
     public static getDetectionMode(): 'black' | 'white' | 'both' {
         const config = vscode.workspace.getConfiguration();
         const val = config.get<string>(this.DETECTION_MODE_KEY) || 'black';
-        if (val === 'white' || val === 'both') return val as 'white' | 'both';
+        if (val === 'white' || val === 'both') {
+            return val as 'white' | 'both';
+        }
         return 'black';
     }
 

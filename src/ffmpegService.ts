@@ -3,8 +3,29 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { CutPoint } from './models';
 import { ConfigManager } from './ConfigManager';
+import { SegmentOutput, formatTimestampForFilename, getSegmentBaseName } from './taskPaths';
 
 export class FFmpegService {
+    private static removeExistingSegments(videoPath: string, outputDir: string) {
+        if (!fs.existsSync(outputDir)) {
+            return;
+        }
+
+        const ext = path.extname(videoPath);
+        const baseName = getSegmentBaseName(videoPath);
+        const segmentPrefix = `${baseName}_segment-`;
+
+        for (const item of fs.readdirSync(outputDir)) {
+            if (!item.startsWith(segmentPrefix) || !item.endsWith(ext)) {
+                continue;
+            }
+
+            const fullPath = path.join(outputDir, item);
+            if (fs.existsSync(fullPath) && fs.statSync(fullPath).isFile()) {
+                fs.rmSync(fullPath, { force: true });
+            }
+        }
+    }
 
     public static detectBlackFrames(videoPath: string): Promise<CutPoint[]> {
         return this.detectFrames(videoPath, 'black');
@@ -161,11 +182,15 @@ export class FFmpegService {
             const timeAfter = cp.time + 1.0; // Assume video is long enough
             const animStartBefore = Math.max(0, cp.time - hoverDuration);
             const animStartAfter = cp.time;
+            const previewDir = path.join(artifactsDir, cp.id);
+            if (!fs.existsSync(previewDir)) {
+                fs.mkdirSync(previewDir, { recursive: true });
+            }
 
-            const beforePath = path.join(artifactsDir, `${cp.id}_before.jpg`);
-            const afterPath = path.join(artifactsDir, `${cp.id}_after.jpg`);
-            const beforeAnimPath = path.join(artifactsDir, `${cp.id}_before.webp`);
-            const afterAnimPath = path.join(artifactsDir, `${cp.id}_after.webp`);
+            const beforePath = path.join(previewDir, 'before.jpg');
+            const afterPath = path.join(previewDir, 'after.jpg');
+            const beforeAnimPath = path.join(previewDir, 'before.webp');
+            const afterAnimPath = path.join(previewDir, 'after.webp');
 
             await this.extractPreview(videoPath, timeBefore, beforePath);
             await this.extractPreview(videoPath, timeAfter, afterPath);
@@ -179,25 +204,31 @@ export class FFmpegService {
         }
     }
 
-    public static async splitVideo(videoPath: string, cutPoints: CutPoint[], outputDir: string): Promise<string[]> {
+    public static async splitVideo(videoPath: string, cutPoints: CutPoint[], outputDir: string): Promise<SegmentOutput[]> {
         // Sort cut points by time ascending
         const sorted = [...cutPoints].sort((a, b) => a.time - b.time);
         const ext = path.extname(videoPath);
-        const baseName = path.basename(videoPath, ext);
+        const baseName = getSegmentBaseName(videoPath);
+
+        this.removeExistingSegments(videoPath, outputDir);
 
         if (sorted.length === 0) {
             // No cut points, just copy the whole video
-            const outPath = path.join(outputDir, `${baseName}_part001${ext}`);
+            const outPath = path.join(outputDir, `${baseName}_segment-001${ext}`);
             await new Promise<void>((resolve, reject) => {
                 const ffmpeg = spawn('ffmpeg', ['-y', '-i', videoPath, '-c', 'copy', outPath]);
                 ffmpeg.on('close', (code) => code === 0 ? resolve() : reject(new Error('Failed to copy video')));
                 ffmpeg.on('error', reject);
             });
-            return [outPath];
+            return [{
+                id: 'segment-001',
+                file: outPath,
+                start: 0
+            }];
         }
 
         const segmentTimes = sorted.map(cp => cp.time.toFixed(3)).join(',');
-        const outPattern = path.join(outputDir, `${baseName}_part%03d${ext}`);
+        const tempPattern = path.join(outputDir, `${baseName}.__segment_tmp_%03d${ext}`);
 
         await new Promise<void>((resolve, reject) => {
             const args = [
@@ -207,7 +238,7 @@ export class FFmpegService {
                 '-f', 'segment',
                 '-segment_times', segmentTimes,
                 '-reset_timestamps', '1',
-                outPattern
+                tempPattern
             ];
 
             const ffmpeg = spawn('ffmpeg', args);
@@ -230,13 +261,32 @@ export class FFmpegService {
             });
         });
 
-        // Generate the expected output file names
-        const outputFiles: string[] = [];
+        const segmentOutputs: SegmentOutput[] = [];
+        const boundaries = [0, ...sorted.map(cp => cp.time)];
         for (let i = 0; i <= sorted.length; i++) {
-            const paddedIndex = i.toString().padStart(3, '0');
-            outputFiles.push(path.join(outputDir, `${baseName}_part${paddedIndex}${ext}`));
+            const tempIndex = i.toString().padStart(3, '0');
+            const segmentIndex = (i + 1).toString().padStart(3, '0');
+            const start = boundaries[i];
+            const end = i < sorted.length ? sorted[i].time : undefined;
+            const timeRange = end !== undefined
+                ? `${formatTimestampForFilename(start)}_${formatTimestampForFilename(end)}`
+                : `${formatTimestampForFilename(start)}_end`;
+            const finalName = `${baseName}_segment-${segmentIndex}_${timeRange}${ext}`;
+            const tempPath = path.join(outputDir, `${baseName}.__segment_tmp_${tempIndex}${ext}`);
+            const finalPath = path.join(outputDir, finalName);
+
+            if (fs.existsSync(tempPath)) {
+                fs.renameSync(tempPath, finalPath);
+            }
+
+            segmentOutputs.push({
+                id: `segment-${segmentIndex}`,
+                file: finalPath,
+                start,
+                end
+            });
         }
 
-        return outputFiles;
+        return segmentOutputs;
     }
 }

@@ -29,16 +29,18 @@ export class TaskTreeProvider implements vscode.TreeDataProvider<TaskNode> {
             const children: TaskNode[] = [];
 
             if (task.isSplit) {
-                const outputDir = path.join(task.taskFolderPath, 'splits');
-                if (fs.existsSync(outputDir)) {
-                    children.push(new FileNode('Output Artifacts', outputDir, vscode.TreeItemCollapsibleState.Expanded));
+                const legacyOutputDir = path.join(task.taskFolderPath, 'splits');
+                if (fs.existsSync(task.taskFolderPath)) {
+                    children.push(new FileNode('Output Artifacts', task.taskFolderPath, vscode.TreeItemCollapsibleState.Expanded));
+                } else if (fs.existsSync(legacyOutputDir)) {
+                    children.push(new FileNode('Output Artifacts', legacyOutputDir, vscode.TreeItemCollapsibleState.Expanded));
                 }
             }
             return children;
         } else if (element instanceof FileNode && element.collapsibleState !== vscode.TreeItemCollapsibleState.None) {
             const children: TaskNode[] = [];
             if (fs.existsSync(element.filePath) && fs.statSync(element.filePath).isDirectory()) {
-                const items = fs.readdirSync(element.filePath);
+                const items = fs.readdirSync(element.filePath).filter(item => !item.startsWith('.'));
                 for (const item of items) {
                     const fullPath = path.join(element.filePath, item);
                     const isDir = fs.statSync(fullPath).isDirectory();

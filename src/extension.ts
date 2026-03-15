@@ -6,7 +6,7 @@ import { CutPointWebview } from './CutPointWebview';
 import { FFmpegService } from './ffmpegService';
 import { CutPoint } from './models';
 import * as fs from 'fs';
-import * as path from 'path';
+import { getPreviewsDir } from './taskPaths';
 
 export function activate(context: vscode.ExtensionContext) {
     console.log('Congratulations, your extension "black-frame-detector" is now active!');
@@ -45,10 +45,15 @@ export function activate(context: vscode.ExtensionContext) {
 
             let selectedMode: 'black' | 'white' | 'both' = defaultMode;
             if (pick) {
-                if (pick.label.startsWith('Use Default')) selectedMode = defaultMode;
-                else if (pick.label === 'Black') selectedMode = 'black';
-                else if (pick.label === 'White') selectedMode = 'white';
-                else if (pick.label === 'Black+White') selectedMode = 'both';
+                if (pick.label.startsWith('Use Default')) {
+                    selectedMode = defaultMode;
+                } else if (pick.label === 'Black') {
+                    selectedMode = 'black';
+                } else if (pick.label === 'White') {
+                    selectedMode = 'white';
+                } else if (pick.label === 'Black+White') {
+                    selectedMode = 'both';
+                }
             }
 
             const task = TaskManager.createTask(videoPath);
@@ -60,7 +65,9 @@ export function activate(context: vscode.ExtensionContext) {
     });
 
     let openWebviewDisposable = vscode.commands.registerCommand('blackFrameDetector.openWebview', async (node: TaskGroupNode, mode?: 'black' | 'white' | 'both') => {
-        if (!node || !node.task) return;
+        if (!node || !node.task) {
+            return;
+        }
         const task = node.task;
 
         let cutPoints: CutPoint[] = TaskManager.getCutPoints(task);
@@ -74,7 +81,7 @@ export function activate(context: vscode.ExtensionContext) {
             try {
                 const usedMode = mode || ConfigManager.getDetectionMode();
                 cutPoints = await FFmpegService.detectFrames(task.originalVideoPath, usedMode);
-                const previewDir = task.taskFolderPath;
+                const previewDir = getPreviewsDir(task);
                 if (!fs.existsSync(previewDir)) { fs.mkdirSync(previewDir, { recursive: true }); }
                 await FFmpegService.generatePreviewsForCutPoints(task.originalVideoPath, cutPoints, previewDir);
                 // Persist initial detected cut points so Restore can use cached results (avoid re-running ffmpeg)

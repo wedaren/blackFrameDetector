@@ -6,6 +6,7 @@ import * as fs from 'fs';
 import { TaskTreeProvider } from './TaskTreeProvider';
 import { TaskManager } from './TaskManager';
 import { ConfigManager } from './ConfigManager';
+import { formatTimestampForFilename, getPreviewsDir, getTimelinePreviewsDir } from './taskPaths';
 
 export class CutPointWebview {
     public static currentPanel: CutPointWebview | undefined;
@@ -13,6 +14,8 @@ export class CutPointWebview {
     private _disposables: vscode.Disposable[] = [];
     private _task: Task;
     private _cutPoints: CutPoint[];
+    private _timelinePreviewRequests = new Map<string, Promise<string>>();
+    private _undoStack: CutPoint[][] = [];
 
     private constructor(panel: vscode.WebviewPanel, task: Task, cutPoints: CutPoint[], private treeProvider: TaskTreeProvider, private storagePath: string) {
         this._panel = panel;
@@ -28,12 +31,13 @@ export class CutPointWebview {
                     case 'updateCutPoint':
                         const cp = this._cutPoints.find(c => c.id === message.id);
                         if (cp) {
+                            this._pushUndoSnapshot();
                             cp.time = message.time;
                             cp.previewBefore = undefined;
                             cp.previewAfter = undefined;
                             cp.previewAnimBefore = undefined;
                             cp.previewAnimAfter = undefined;
-                            const previewDir = this._task.taskFolderPath;
+                            const previewDir = getPreviewsDir(this._task);
                             if (previewDir && fs.existsSync(previewDir)) {
                                 await FFmpegService.generatePreviewsForCutPoints(this._task.originalVideoPath, [cp], previewDir);
                             }
@@ -57,18 +61,23 @@ export class CutPointWebview {
                         }
                         return;
                     case 'addCutPoint':
+                        this._pushUndoSnapshot();
                         const newCp: CutPoint = {
                             id: `cp_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
                             time: message.time
                         };
                         this._cutPoints.push(newCp);
                         this._cutPoints.sort((a, b) => a.time - b.time);
-                        const previewDirNew = path.join(this.storagePath, this._task.id);
+                        const previewDirNew = getPreviewsDir(this._task);
+                        if (!fs.existsSync(previewDirNew)) {
+                            fs.mkdirSync(previewDirNew, { recursive: true });
+                        }
                         await FFmpegService.generatePreviewsForCutPoints(this._task.originalVideoPath, [newCp], previewDirNew);
                         this._saveCutPoints();
                         this._update();
                         return;
                     case 'deleteCutPoint':
+                        this._pushUndoSnapshot();
                         this._cutPoints = this._cutPoints.filter(c => c.id !== message.id);
                         this._saveCutPoints();
                         this._update();
@@ -86,16 +95,13 @@ export class CutPointWebview {
                         this._panel.dispose();
 
                         try {
-                            const outputDir = path.join(this._task.taskFolderPath, 'splits');
-                            if (!fs.existsSync(outputDir)) {
-                                fs.mkdirSync(outputDir, { recursive: true });
-                            }
-                            await FFmpegService.splitVideo(this._task.originalVideoPath, this._cutPoints, outputDir);
+                            const segments = await FFmpegService.splitVideo(this._task.originalVideoPath, this._cutPoints, this._task.taskFolderPath);
+                            TaskManager.saveSplitOutputs(this._task, segments);
 
                             this._task.isSplitting = false;
                             this._task.isSplit = true;
                             TaskManager.updateTask(this._task);
-                            vscode.window.showInformationMessage(`Splitting complete! Saved to ${outputDir}`);
+                            vscode.window.showInformationMessage(`Splitting complete! Saved to ${this._task.taskFolderPath}`);
                             this.treeProvider.refresh();
                         } catch (e: any) {
                             this._task.isSplitting = false;
@@ -110,10 +116,13 @@ export class CutPointWebview {
                             const cached = TaskManager.getDetectedCutPoints(this._task);
                             if (cached && cached.length > 0) {
                                 const confirmCached = await vscode.window.showWarningMessage('Restore to original detected cut points? This will replace current cut points.', { modal: true }, 'Restore');
-                                if (confirmCached !== 'Restore') return;
+                                if (confirmCached !== 'Restore') {
+                                    return;
+                                }
 
+                                this._pushUndoSnapshot();
                                 this._cutPoints = cached;
-                                const previewDirCached = this._task.taskFolderPath;
+                                const previewDirCached = getPreviewsDir(this._task);
                                 try {
                                     if (!fs.existsSync(previewDirCached)) { fs.mkdirSync(previewDirCached, { recursive: true }); }
                                     await FFmpegService.generatePreviewsForCutPoints(this._task.originalVideoPath, this._cutPoints, previewDirCached);
@@ -127,7 +136,9 @@ export class CutPointWebview {
 
                             // No cached detected data — offer to re-run detection
                             const run = await vscode.window.showWarningMessage('No cached detected cut points found. Re-run detection (may be slow)?', { modal: true }, 'Re-detect', 'Cancel');
-                            if (run !== 'Re-detect') return;
+                            if (run !== 'Re-detect') {
+                                return;
+                            }
 
                             const defaultMode = ConfigManager.getDetectionMode();
                             const pick = await vscode.window.showQuickPick([
@@ -139,10 +150,15 @@ export class CutPointWebview {
 
                             let selectedMode: 'black' | 'white' | 'both' = defaultMode;
                             if (pick) {
-                                if (pick.label.startsWith('Use Default')) selectedMode = defaultMode;
-                                else if (pick.label === 'Black') selectedMode = 'black';
-                                else if (pick.label === 'White') selectedMode = 'white';
-                                else if (pick.label === 'Black+White') selectedMode = 'both';
+                                if (pick.label.startsWith('Use Default')) {
+                                    selectedMode = defaultMode;
+                                } else if (pick.label === 'Black') {
+                                    selectedMode = 'black';
+                                } else if (pick.label === 'White') {
+                                    selectedMode = 'white';
+                                } else if (pick.label === 'Black+White') {
+                                    selectedMode = 'both';
+                                }
                             }
 
                             this._task.isLoading = true;
@@ -151,9 +167,10 @@ export class CutPointWebview {
 
                             try {
                                 const detected = await FFmpegService.detectFrames(this._task.originalVideoPath, selectedMode);
-                                const previewDir = this._task.taskFolderPath;
+                                const previewDir = getPreviewsDir(this._task);
                                 if (!fs.existsSync(previewDir)) { fs.mkdirSync(previewDir, { recursive: true }); }
                                 await FFmpegService.generatePreviewsForCutPoints(this._task.originalVideoPath, detected, previewDir);
+                                this._pushUndoSnapshot();
                                 this._cutPoints = detected;
                                 // overwrite cached detected.json with fresh results
                                 TaskManager.saveDetectedCutPoints(this._task, detected, true);
@@ -167,11 +184,89 @@ export class CutPointWebview {
                                 this.treeProvider.refresh();
                             }
                         }
+                        return;
+                    case 'undo':
+                        this._undoLastAction();
+                        return;
+                    case 'requestTimelinePreview':
+                        {
+                            const time = typeof message.time === 'number' ? message.time : Number(message.time);
+                            if (!Number.isFinite(time)) {
+                                return;
+                            }
+
+                            try {
+                                const previewPath = await this._getTimelinePreviewPath(time);
+                                const previewUri = `${this._panel.webview.asWebviewUri(vscode.Uri.file(previewPath)).toString()}?t=${Date.now().toString()}`;
+                                this._panel.webview.postMessage({
+                                    command: 'timelinePreviewReady',
+                                    time,
+                                    previewUri
+                                });
+                            } catch (e: any) {
+                                this._panel.webview.postMessage({
+                                    command: 'timelinePreviewFailed',
+                                    time,
+                                    error: e.message
+                                });
+                            }
+                        }
+                        return;
                 }
             },
             null,
             this._disposables
         );
+    }
+
+    private async _getTimelinePreviewPath(time: number): Promise<string> {
+        const bucketTime = Math.max(0, Math.round(time * 2) / 2);
+        const previewsDir = getTimelinePreviewsDir(this._task);
+        if (!fs.existsSync(previewsDir)) {
+            fs.mkdirSync(previewsDir, { recursive: true });
+        }
+
+        const bucketKey = formatTimestampForFilename(bucketTime).replace(/-/g, '_');
+        const previewPath = path.join(previewsDir, `timeline_${bucketKey}_${bucketTime.toFixed(1).replace('.', '_')}s.jpg`);
+        if (fs.existsSync(previewPath)) {
+            return previewPath;
+        }
+
+        if (!this._timelinePreviewRequests.has(previewPath)) {
+            this._timelinePreviewRequests.set(previewPath, (async () => {
+                await FFmpegService.extractPreview(this._task.originalVideoPath, bucketTime, previewPath);
+                return previewPath;
+            })());
+        }
+
+        try {
+            return await this._timelinePreviewRequests.get(previewPath)!;
+        } finally {
+            this._timelinePreviewRequests.delete(previewPath);
+        }
+    }
+
+    private _cloneCutPoints(cutPoints: CutPoint[]): CutPoint[] {
+        return cutPoints.map(cp => ({ ...cp }));
+    }
+
+    private _pushUndoSnapshot() {
+        this._undoStack.push(this._cloneCutPoints(this._cutPoints));
+        if (this._undoStack.length > 50) {
+            this._undoStack.shift();
+        }
+    }
+
+    private _undoLastAction() {
+        const snapshot = this._undoStack.pop();
+        if (!snapshot) {
+            void vscode.window.showInformationMessage('Nothing to undo.');
+            return;
+        }
+
+        this._cutPoints = this._cloneCutPoints(snapshot);
+        this._saveCutPoints();
+        this._update();
     }
 
     private _saveCutPoints() {
@@ -199,6 +294,7 @@ export class CutPointWebview {
                 enableScripts: true,
                 localResourceRoots: [
                     vscode.Uri.file(storagePath),
+                    vscode.Uri.file(getTimelinePreviewsDir(task)),
                     vscode.Uri.file(path.dirname(task.originalVideoPath))
                 ]
             }
@@ -226,6 +322,7 @@ export class CutPointWebview {
     private _getHtmlForWebview(webview: vscode.Webview) {
         const videoUri = webview.asWebviewUri(vscode.Uri.file(this._task.originalVideoPath)).toString();
         const cacheBuster = Date.now().toString();
+        const minSliceDuration = ConfigManager.getMinSliceDuration();
         const mappedData = this._cutPoints.map(cp => {
             const beforeUri = cp.previewBefore && fs.existsSync(cp.previewBefore) ? `${webview.asWebviewUri(vscode.Uri.file(cp.previewBefore)).toString()}?t=${cacheBuster}` : '';
             const afterUri = cp.previewAfter && fs.existsSync(cp.previewAfter) ? `${webview.asWebviewUri(vscode.Uri.file(cp.previewAfter)).toString()}?t=${cacheBuster}` : '';
@@ -271,9 +368,31 @@ export class CutPointWebview {
         .header-actions { display: flex; gap: 15px; align-items: center; }
         #new-time { width: 80px; }
         .sticky-top { position: sticky; top: -20px; background: var(--vscode-editor-background); padding: 20px 0 10px 0; z-index: 100; margin-top: -20px; border-bottom: 1px solid var(--vscode-widget-border); }
+        .overview-panel { margin: 16px 0 24px 0; padding: 16px; border: 1px solid var(--vscode-widget-border); border-radius: 8px; background: var(--vscode-sideBar-background); }
+        .overview-head { display: flex; justify-content: space-between; gap: 16px; align-items: center; margin-bottom: 12px; }
+        .overview-title { margin: 0; font-size: 16px; }
+        .overview-meta { color: var(--vscode-descriptionForeground); font-size: 12px; }
+        .timeline-wrap { position: relative; margin-bottom: 14px; }
+        .timeline { display: flex; width: 100%; height: 18px; overflow: hidden; border-radius: 999px; border: 1px solid var(--vscode-widget-border); background: var(--vscode-editor-inactiveSelectionBackground); }
+        .timeline-segment { min-width: 6px; border-right: 1px solid var(--vscode-editor-background); background: linear-gradient(90deg, var(--vscode-button-background), var(--vscode-button-hoverBackground)); }
+        .timeline-segment.is-short { background: linear-gradient(90deg, #b85a00, #e0a000); }
+        .timeline-preview { position: absolute; left: 0; top: calc(100% + 10px); width: 220px; padding: 8px; border-radius: 8px; border: 1px solid var(--vscode-widget-border); background: var(--vscode-editorWidget-background); box-shadow: 0 6px 24px rgba(0,0,0,0.25); transform: translateX(-50%); pointer-events: none; opacity: 0; transition: opacity 120ms ease; z-index: 20; }
+        .timeline-preview.is-visible { opacity: 1; }
+        .timeline-preview img { display: none; width: 100%; height: auto; border-radius: 4px; background: #000; }
+        .timeline-preview-time { margin-top: 6px; font-size: 12px; color: var(--vscode-descriptionForeground); text-align: center; }
+        .segment-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+        .segment-card { padding: 12px; border-radius: 6px; border: 1px solid var(--vscode-widget-border); background: var(--vscode-editorWidget-background); }
+        .segment-card.is-short { border-color: #e0a000; box-shadow: inset 0 0 0 1px rgba(224, 160, 0, 0.25); }
+        .segment-name { font-size: 13px; font-weight: 600; margin-bottom: 6px; }
+        .segment-duration { font-size: 18px; font-weight: 700; margin-bottom: 6px; }
+        .segment-range, .segment-warning { font-size: 12px; color: var(--vscode-descriptionForeground); }
+        .segment-warning { color: #e0a000; margin-top: 4px; }
+        .clickable { cursor: pointer; }
+        .cut-point.is-focused { border-color: var(--vscode-focusBorder); box-shadow: 0 0 0 1px var(--vscode-focusBorder), 0 2px 12px rgba(0,0,0,0.2); }
     </style>
 </head>
 <body>
+    <video id="source-video" preload="metadata" src="${videoUri}" style="display:none;"></video>
     <div class="sticky-top">
         <div class="header" style="border: none; padding-bottom: 10px; margin-bottom: 0;">
             <h2 style="margin: 0;">Refine Cut Points</h2>
@@ -282,10 +401,26 @@ export class CutPointWebview {
                     <input type="number" id="new-time" step="any" placeholder="Time (s)">
                     <button onclick="addCutPoint()">+ Add Cut Point</button>
                 </div>
+                <button onclick="undoEdit()">Undo</button>
                 <button onclick="restoreDetected()">Restore Detected</button>
                 <button class="primary" onclick="confirmSplit()">Confirm and Split Video</button>
             </div>
         </div>
+    </div>
+
+    <div class="overview-panel">
+        <div class="overview-head">
+            <h3 class="overview-title">Segment Overview</h3>
+            <div class="overview-meta" id="overview-meta">Loading video duration...</div>
+        </div>
+        <div class="timeline-wrap" id="timeline-wrap">
+            <div class="timeline-preview" id="timeline-preview">
+                <img id="timeline-preview-image" alt="Timeline preview">
+                <div class="timeline-preview-time" id="timeline-preview-time">Loading preview...</div>
+            </div>
+            <div class="timeline" id="segment-timeline"></div>
+        </div>
+        <div class="segment-grid" id="segment-grid"></div>
     </div>
     
     <div id="cut-points-list" style="margin-top: 20px;">
@@ -304,7 +439,7 @@ export class CutPointWebview {
             const origTime = cp.originalTime || cp.time;
 
             return `
-            <div class="cut-point">
+            <div class="cut-point" id="cut-point-card-${cp.id}">
                 <div class="controls">
                     <div><strong>Cut #${idx + 1}</strong></div>
                     ${durationTxt}
@@ -353,6 +488,14 @@ export class CutPointWebview {
 
     <script>
         const vscode = acquireVsCodeApi();
+        const minSliceDuration = ${JSON.stringify(minSliceDuration)};
+        const initialCutPoints = ${JSON.stringify(mappedData.map(cp => ({ id: cp.id, time: cp.time })))};
+        let currentVideoDuration = undefined;
+        let timelineHoverTimeout = undefined;
+        let lastTimelinePreviewBucket = undefined;
+        let activePreviewRequestBucket = undefined;
+        let pendingPreviewBucket = undefined;
+        let previewCache = new Map();
 
         window.addEventListener('message', event => {
             const message = event.data;
@@ -390,9 +533,230 @@ export class CutPointWebview {
                     }
                     
                     document.body.style.cursor = 'default';
+                    renderSegmentOverview();
+                    break;
+                case 'timelinePreviewReady':
+                    previewCache.set(message.time, message.previewUri);
+                    if (activePreviewRequestBucket === message.time || pendingPreviewBucket === message.time) {
+                        updateTimelinePreviewImage(message.time, message.previewUri);
+                        activePreviewRequestBucket = undefined;
+                        pendingPreviewBucket = undefined;
+                    }
+                    break;
+                case 'timelinePreviewFailed':
+                    if (activePreviewRequestBucket === message.time) {
+                        activePreviewRequestBucket = undefined;
+                    }
                     break;
             }
         });
+
+        const sourceVideo = document.getElementById('source-video');
+        sourceVideo.addEventListener('loadedmetadata', () => {
+            if (Number.isFinite(sourceVideo.duration)) {
+                currentVideoDuration = sourceVideo.duration;
+                renderSegmentOverview();
+            }
+        });
+        sourceVideo.addEventListener('durationchange', () => {
+            if (Number.isFinite(sourceVideo.duration)) {
+                currentVideoDuration = sourceVideo.duration;
+                renderSegmentOverview();
+            }
+        });
+
+        function formatSeconds(seconds) {
+            if (!Number.isFinite(seconds)) {
+                return 'Unknown';
+            }
+            const total = Math.max(0, Math.floor(seconds));
+            const hours = Math.floor(total / 3600);
+            const minutes = Math.floor((total % 3600) / 60);
+            const secs = total % 60;
+            if (hours > 0) {
+                return [hours, minutes.toString().padStart(2, '0'), secs.toString().padStart(2, '0')].join(':');
+            }
+            return [minutes.toString().padStart(2, '0'), secs.toString().padStart(2, '0')].join(':');
+        }
+
+        function getCurrentCutPoints() {
+            const ids = initialCutPoints.map(cp => cp.id);
+            return ids
+                .map(id => {
+                    const input = document.getElementById('time-' + id);
+                    if (!input) {
+                        return null;
+                    }
+                    const time = parseFloat(input.value);
+                    if (isNaN(time)) {
+                        return null;
+                    }
+                    return { id, time };
+                })
+                .filter(Boolean)
+                .sort((a, b) => a.time - b.time);
+        }
+
+        function buildSegments(cutPoints, videoDuration) {
+            const segments = [];
+            let segmentStart = 0;
+            for (let i = 0; i < cutPoints.length; i++) {
+                const end = cutPoints[i].time;
+                segments.push({
+                    id: 'segment-' + String(i + 1).padStart(3, '0'),
+                    cutPointId: cutPoints[i].id,
+                    start: segmentStart,
+                    end,
+                    duration: Math.max(0, end - segmentStart)
+                });
+                segmentStart = end;
+            }
+
+            segments.push({
+                id: 'segment-' + String(cutPoints.length + 1).padStart(3, '0'),
+                cutPointId: cutPoints.length > 0 ? cutPoints[cutPoints.length - 1].id : undefined,
+                start: segmentStart,
+                end: Number.isFinite(videoDuration) ? videoDuration : undefined,
+                duration: Number.isFinite(videoDuration) ? Math.max(0, videoDuration - segmentStart) : undefined
+            });
+
+            return segments;
+        }
+
+        function renderSegmentOverview() {
+            const meta = document.getElementById('overview-meta');
+            const timeline = document.getElementById('segment-timeline');
+            const grid = document.getElementById('segment-grid');
+            const cutPoints = getCurrentCutPoints();
+            const segments = buildSegments(cutPoints, currentVideoDuration);
+
+            if (!Number.isFinite(currentVideoDuration)) {
+                meta.textContent = 'Loading video duration...';
+            } else {
+                meta.textContent = 'Video duration ' + formatSeconds(currentVideoDuration) + ' · ' + segments.length + ' segments';
+            }
+
+            timeline.innerHTML = '';
+            grid.innerHTML = '';
+
+            segments.forEach(segment => {
+                const segmentDuration = Number.isFinite(segment.duration) ? segment.duration : 0;
+                const widthPercent = Number.isFinite(currentVideoDuration) && currentVideoDuration > 0
+                    ? Math.max((segmentDuration / currentVideoDuration) * 100, 1)
+                    : Math.max(100 / Math.max(segments.length, 1), 8);
+                const isShort = Number.isFinite(segment.duration) && segment.duration < minSliceDuration;
+
+                const timelineSegment = document.createElement('div');
+                timelineSegment.className = 'timeline-segment clickable' + (isShort ? ' is-short' : '');
+                timelineSegment.style.width = widthPercent + '%';
+                timelineSegment.title = segment.id + ' · ' + (Number.isFinite(segment.duration) ? formatSeconds(segment.duration) : 'Pending duration');
+                timelineSegment.addEventListener('click', () => focusCutPoint(segment.cutPointId));
+                timeline.appendChild(timelineSegment);
+
+                const card = document.createElement('div');
+                card.className = 'segment-card clickable' + (isShort ? ' is-short' : '');
+                card.addEventListener('click', () => focusCutPoint(segment.cutPointId));
+                const endText = Number.isFinite(segment.end) ? formatSeconds(segment.end) : 'Video end';
+                const durationText = Number.isFinite(segment.duration) ? formatSeconds(segment.duration) : 'Waiting for video metadata';
+                card.innerHTML = [
+                    '<div class="segment-name">' + segment.id + '</div>',
+                    '<div class="segment-duration">' + durationText + '</div>',
+                    '<div class="segment-range">' + formatSeconds(segment.start) + ' → ' + endText + '</div>',
+                    isShort ? '<div class="segment-warning">Below min slice duration (' + minSliceDuration + 's)</div>' : ''
+                ].join('');
+                grid.appendChild(card);
+            });
+        }
+
+        function focusCutPoint(cutPointId) {
+            if (!cutPointId) {
+                return;
+            }
+            const target = document.getElementById('cut-point-card-' + cutPointId);
+            if (!target) {
+                return;
+            }
+
+            document.querySelectorAll('.cut-point.is-focused').forEach(node => node.classList.remove('is-focused'));
+            target.classList.add('is-focused');
+            target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            window.setTimeout(() => {
+                target.classList.remove('is-focused');
+            }, 1800);
+        }
+
+        const timeline = document.getElementById('segment-timeline');
+        const timelinePreview = document.getElementById('timeline-preview');
+        const timelinePreviewImage = document.getElementById('timeline-preview-image');
+        const timelinePreviewTime = document.getElementById('timeline-preview-time');
+        const timelineWrap = document.getElementById('timeline-wrap');
+
+        timeline.addEventListener('mousemove', event => {
+            if (!Number.isFinite(currentVideoDuration) || currentVideoDuration <= 0) {
+                return;
+            }
+
+            const rect = timeline.getBoundingClientRect();
+            const ratio = Math.min(Math.max((event.clientX - rect.left) / rect.width, 0), 1);
+            const hoverTime = ratio * currentVideoDuration;
+            showTimelinePreview(ratio, hoverTime);
+        });
+
+        timeline.addEventListener('mouseenter', event => {
+            if (!Number.isFinite(currentVideoDuration) || currentVideoDuration <= 0) {
+                return;
+            }
+            const rect = timeline.getBoundingClientRect();
+            const ratio = Math.min(Math.max((event.clientX - rect.left) / rect.width, 0), 1);
+            const hoverTime = ratio * currentVideoDuration;
+            showTimelinePreview(ratio, hoverTime);
+        });
+
+        timeline.addEventListener('mouseleave', () => {
+            timelinePreview.classList.remove('is-visible');
+            if (timelineHoverTimeout) {
+                clearTimeout(timelineHoverTimeout);
+                timelineHoverTimeout = undefined;
+            }
+        });
+
+        function showTimelinePreview(ratio, hoverTime) {
+            const previewX = Math.max(16, Math.min(ratio * timelineWrap.clientWidth, timelineWrap.clientWidth - 16));
+            timelinePreview.style.left = previewX + 'px';
+            timelinePreview.classList.add('is-visible');
+            timelinePreviewTime.textContent = formatSeconds(hoverTime);
+
+            const bucketTime = Math.max(0, Math.round(hoverTime * 2) / 2);
+            if (lastTimelinePreviewBucket === bucketTime && previewCache.has(bucketTime)) {
+                updateTimelinePreviewImage(bucketTime, previewCache.get(bucketTime));
+                return;
+            }
+
+            lastTimelinePreviewBucket = bucketTime;
+            if (previewCache.has(bucketTime)) {
+                updateTimelinePreviewImage(bucketTime, previewCache.get(bucketTime));
+                return;
+            }
+
+            pendingPreviewBucket = bucketTime;
+            timelinePreviewTime.textContent = formatSeconds(hoverTime) + ' · Loading preview...';
+            if (timelineHoverTimeout) {
+                clearTimeout(timelineHoverTimeout);
+            }
+            timelineHoverTimeout = setTimeout(() => {
+                if (activePreviewRequestBucket === bucketTime) {
+                    return;
+                }
+                activePreviewRequestBucket = bucketTime;
+                vscode.postMessage({ command: 'requestTimelinePreview', time: bucketTime });
+            }, 120);
+        }
+
+        function updateTimelinePreviewImage(time, uri) {
+            timelinePreviewImage.src = uri;
+            timelinePreviewImage.style.display = 'block';
+            timelinePreviewTime.textContent = formatSeconds(time);
+        }
 
         function hoverAnim(imgElement) {
             const animSrc = imgElement.getAttribute('data-anim');
@@ -412,12 +776,14 @@ export class CutPointWebview {
             const sliderVal = document.getElementById('slider-' + id).value;
             const input = document.getElementById('time-' + id);
             input.value = parseFloat(sliderVal).toFixed(3);
+            renderSegmentOverview();
         }
 
         function syncInput(id) {
             const inputVal = document.getElementById('time-' + id).value;
             const slider = document.getElementById('slider-' + id);
             if (slider) slider.value = parseFloat(inputVal).toFixed(3);
+            renderSegmentOverview();
         }
 
         function updateSliderRange(id, baseTime) {
@@ -486,6 +852,12 @@ export class CutPointWebview {
         function restoreDetected() {
             vscode.postMessage({ command: 'restoreDetected' });
         }
+
+        function undoEdit() {
+            vscode.postMessage({ command: 'undo' });
+        }
+
+        renderSegmentOverview();
     </script>
 </body>
 </html>`;

@@ -3,11 +3,20 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { Task, CutPoint } from './models';
 import { ConfigManager } from './ConfigManager';
+import { SegmentOutput, getAnalysisDir, getCutPointsFile, getDetectedCutPointsFile, getPreviewsDir } from './taskPaths';
 
 interface PersistentTaskState {
     task: Task;
-    cutPoints: CutPoint[];
+    cutPoints?: CutPoint[];
     detectedCutPoints?: CutPoint[];
+    analysis?: {
+        cutPointsFile?: string;
+        detectedCutPointsFile?: string;
+        previewsDir?: string;
+    };
+    outputs?: {
+        segments?: SegmentOutput[];
+    };
 }
 
 export class TaskManager {
@@ -42,27 +51,75 @@ export class TaskManager {
         return tasks.sort((a, b) => b.createdAt - a.createdAt);
     }
 
+    private static ensureAnalysisDirectory(task: Task) {
+        const analysisDir = getAnalysisDir(task);
+        if (!fs.existsSync(analysisDir)) {
+            fs.mkdirSync(analysisDir, { recursive: true });
+        }
+    }
+
+    private static readState(task: Task): PersistentTaskState | undefined {
+        const taskJsonPath = path.join(task.taskFolderPath, 'task.json');
+        if (!fs.existsSync(taskJsonPath)) {
+            return undefined;
+        }
+
+        try {
+            const content = fs.readFileSync(taskJsonPath, 'utf8');
+            return JSON.parse(content) as PersistentTaskState;
+        } catch (e) {
+            console.error(`Failed to read task.json for ${task.id}`, e);
+            return undefined;
+        }
+    }
+
+    private static writeJsonFile(filePath: string, content: unknown) {
+        const dir = path.dirname(filePath);
+        if (!fs.existsSync(dir)) {
+            fs.mkdirSync(dir, { recursive: true });
+        }
+        fs.writeFileSync(filePath, JSON.stringify(content, null, 2), 'utf8');
+    }
+
+    private static readCutPointsFile(filePath: string): CutPoint[] {
+        if (!fs.existsSync(filePath)) {
+            return [];
+        }
+        try {
+            const content = fs.readFileSync(filePath, 'utf8');
+            const parsed = JSON.parse(content);
+            return Array.isArray(parsed) ? parsed : [];
+        } catch (e) {
+            console.error(`Failed to read cut points file at ${filePath}`, e);
+            return [];
+        }
+    }
+
     private static saveState(task: Task, cutPoints: CutPoint[]) {
         if (!task.taskFolderPath) { return; }
         if (!fs.existsSync(task.taskFolderPath)) {
             fs.mkdirSync(task.taskFolderPath, { recursive: true });
         }
-        const taskJsonPath = path.join(task.taskFolderPath, 'task.json');
+        this.ensureAnalysisDirectory(task);
 
-        // Try to preserve existing detectedCutPoints if present
-        let detectedCutPoints: CutPoint[] | undefined = undefined;
-        if (fs.existsSync(taskJsonPath)) {
-            try {
-                const content = fs.readFileSync(taskJsonPath, 'utf8');
-                const existing: PersistentTaskState = JSON.parse(content);
-                detectedCutPoints = existing.detectedCutPoints;
-            } catch (e) {
-                console.error(`Failed to read existing task.json for ${task.id}`, e);
-            }
+        const existing = this.readState(task);
+        const state: PersistentTaskState = {
+            task,
+            analysis: {
+                cutPointsFile: path.relative(task.taskFolderPath, getCutPointsFile(task)),
+                detectedCutPointsFile: path.relative(task.taskFolderPath, getDetectedCutPointsFile(task)),
+                previewsDir: path.relative(task.taskFolderPath, getPreviewsDir(task))
+            },
+            outputs: existing?.outputs
+        };
+
+        if (cutPoints.length > 0) {
+            this.writeJsonFile(getCutPointsFile(task), cutPoints);
+        } else if (!fs.existsSync(getCutPointsFile(task))) {
+            this.writeJsonFile(getCutPointsFile(task), []);
         }
 
-        const state: PersistentTaskState = { task, cutPoints, detectedCutPoints };
-        fs.writeFileSync(taskJsonPath, JSON.stringify(state, null, 2), 'utf8');
+        fs.writeFileSync(path.join(task.taskFolderPath, 'task.json'), JSON.stringify(state, null, 2), 'utf8');
     }
 
     public static createTask(videoPath: string): Task {
@@ -104,17 +161,20 @@ export class TaskManager {
 
     public static getCutPoints(task: Task): CutPoint[] {
         if (!task.taskFolderPath) { return []; }
-        const taskJsonPath = path.join(task.taskFolderPath, 'task.json');
-        if (fs.existsSync(taskJsonPath)) {
-            try {
-                const content = fs.readFileSync(taskJsonPath, 'utf8');
-                const state: PersistentTaskState = JSON.parse(content);
-                return state.cutPoints || [];
-            } catch (e) {
-                console.error(`Failed to load cut points for ${task.id}`, e);
-            }
+        const state = this.readState(task);
+        if (!state) {
+            return [];
         }
-        return [];
+
+        const cutPointsFile = state.analysis?.cutPointsFile
+            ? path.join(task.taskFolderPath, state.analysis.cutPointsFile)
+            : getCutPointsFile(task);
+
+        if (fs.existsSync(cutPointsFile)) {
+            return this.readCutPointsFile(cutPointsFile);
+        }
+
+        return state.cutPoints || [];
     }
 
     public static saveCutPoints(task: Task, cutPoints: CutPoint[]) {
@@ -125,21 +185,18 @@ export class TaskManager {
     public static saveDetectedCutPoints(task: Task, cutPoints: CutPoint[], overwrite: boolean = false) {
         if (!task.taskFolderPath) { return; }
         try {
-            const taskJsonPath = path.join(task.taskFolderPath, 'task.json');
-            let state: PersistentTaskState = { task, cutPoints: [] };
-            if (fs.existsSync(taskJsonPath)) {
-                try {
-                    const content = fs.readFileSync(taskJsonPath, 'utf8');
-                    state = JSON.parse(content);
-                } catch (e) {
-                    // ignore and overwrite
-                    state = { task, cutPoints: [] };
-                }
-            }
+            this.ensureAnalysisDirectory(task);
+            const state = this.readState(task) || { task };
+            const targetFile = state.analysis?.detectedCutPointsFile
+                ? path.join(task.taskFolderPath, state.analysis.detectedCutPointsFile)
+                : getDetectedCutPointsFile(task);
 
-            if (overwrite || !state.detectedCutPoints) {
-                state.detectedCutPoints = cutPoints;
-                fs.writeFileSync(taskJsonPath, JSON.stringify(state, null, 2), 'utf8');
+            const hasExistingFile = fs.existsSync(targetFile) && this.readCutPointsFile(targetFile).length > 0;
+            const hasLegacyEmbedded = Array.isArray(state.detectedCutPoints) && state.detectedCutPoints.length > 0;
+
+            if (overwrite || (!hasExistingFile && !hasLegacyEmbedded)) {
+                this.writeJsonFile(targetFile, cutPoints);
+                this.saveState(task, this.getCutPoints(task));
             }
         } catch (e) {
             console.error('Failed to save detected cut points into task.json', e);
@@ -148,16 +205,36 @@ export class TaskManager {
 
     public static getDetectedCutPoints(task: Task): CutPoint[] {
         if (!task.taskFolderPath) { return []; }
-        const taskJsonPath = path.join(task.taskFolderPath, 'task.json');
-        if (fs.existsSync(taskJsonPath)) {
-            try {
-                const content = fs.readFileSync(taskJsonPath, 'utf8');
-                const state: PersistentTaskState = JSON.parse(content);
-                return state.detectedCutPoints || [];
-            } catch (e) {
-                console.error('Failed to read detected cut points from task.json', e);
-            }
+        const state = this.readState(task);
+        if (!state) {
+            return [];
         }
-        return [];
+
+        const detectedFile = state.analysis?.detectedCutPointsFile
+            ? path.join(task.taskFolderPath, state.analysis.detectedCutPointsFile)
+            : getDetectedCutPointsFile(task);
+
+        if (fs.existsSync(detectedFile)) {
+            return this.readCutPointsFile(detectedFile);
+        }
+
+        return state.detectedCutPoints || [];
+    }
+
+    public static saveSplitOutputs(task: Task, segments: SegmentOutput[]) {
+        const state = this.readState(task) || { task };
+        state.task = task;
+        state.analysis = {
+            cutPointsFile: path.relative(task.taskFolderPath, getCutPointsFile(task)),
+            detectedCutPointsFile: path.relative(task.taskFolderPath, getDetectedCutPointsFile(task)),
+            previewsDir: path.relative(task.taskFolderPath, getPreviewsDir(task))
+        };
+        state.outputs = { segments };
+        fs.writeFileSync(path.join(task.taskFolderPath, 'task.json'), JSON.stringify(state, null, 2), 'utf8');
+    }
+
+    public static getSplitOutputs(task: Task): SegmentOutput[] {
+        const state = this.readState(task);
+        return state?.outputs?.segments || [];
     }
 }
