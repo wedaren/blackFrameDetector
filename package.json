@@ -4,6 +4,10 @@
     "displayName": "Black Frame Detector",
     "description": "Detects black frames in videos",
     "version": "0.0.1",
+    "repository": {
+        "type": "git",
+        "url": "git@github.com:wedaren/blackFrameDetector.git"
+    },
     "engines": {
         "vscode": "^1.109.0"
     },
